@@ -1,0 +1,13 @@
+target
+target-eclipse
+.classpath
+.project
+.settings
+.attach*
+*.log
+
+fork/commons-i18n/.externalToolBuilders/
+fork/commons-i18n/maven-eclipse.xml
+core/src/main/java/org/marketcetera/core/Version.java
+dare/src/main/java/org/marketcetera/ors/Version.java
+ui/webui-package/src/main/webapp/VAADIN/widgetsets/
