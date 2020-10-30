@@ -2,7 +2,6 @@ package org.marketcetera.marketdata.iex;
 
 import java.math.BigDecimal;
 import java.text.NumberFormat;
-import java.text.ParseException;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.Date;
@@ -18,21 +17,25 @@ import javax.annotation.concurrent.ThreadSafe;
 import pl.zankowski.iextrading4j.api.stocks.Quote;
 import pl.zankowski.iextrading4j.api.stocks.v1.BatchStocks;
 
-import org.apache.commons.lang.ArrayUtils;
 import org.marketcetera.core.CoreException;
 import org.marketcetera.event.AskEvent;
 import org.marketcetera.event.BidEvent;
+import org.marketcetera.event.EquityEvent;
 import org.marketcetera.event.Event;
 import org.marketcetera.event.EventTranslator;
 import org.marketcetera.event.EventType;
 import org.marketcetera.event.HasEventType;
+import org.marketcetera.event.MarketstatEvent;
 import org.marketcetera.event.QuoteAction;
 import org.marketcetera.event.QuoteEvent;
 import org.marketcetera.event.TradeEvent;
+import org.marketcetera.event.impl.MarketstatEventBuilder;
 import org.marketcetera.event.impl.QuoteEventBuilder;
 import org.marketcetera.event.impl.TradeEventBuilder;
 import org.marketcetera.trade.Equity;
 import org.marketcetera.trade.Instrument;
+import org.marketcetera.trade.Option;
+import org.marketcetera.util.log.I18NBoundMessage1P;
 import org.marketcetera.util.log.SLF4JLoggerProxy;
 import org.marketcetera.util.misc.ClassVersion;
 
@@ -59,10 +62,11 @@ public enum IEXFeedEventTranslator
                                             String inHandle)
             throws CoreException
     {
-        if(!(inData instanceof BatchStocks)) {
+        if(!(inData instanceof Map<?, ?>)) {
             throw new UnsupportedOperationException(Messages.UNEXPECTED_DATA.getText(inData.getClass().getName()));
         } // todo lizhao        
-        BatchStocks data = (BatchStocks)inData;
+        @SuppressWarnings("unchecked")
+		Map<String, BatchStocks> data = (Map<String, BatchStocks>)inData;
         SLF4JLoggerProxy.debug(IEXFeedEventTranslator.class,
                                "Received [{}] {}", //$NON-NLS-1$
                                inHandle,
@@ -85,16 +89,24 @@ public enum IEXFeedEventTranslator
      * @param inHandle 
      * @return a <code>List&lt;Event&gt;</code> value
      */
-    private List<Event> getEventsFrom(BatchStocks inData, String inHandle)
+    private List<Event> getEventsFrom(Map<String, BatchStocks> inDataMap, String inHandle)
     {
         SLF4JLoggerProxy.debug(IEXFeedEventTranslator.class,
                                "Getting events from {}", //$NON-NLS-1$
-                               inData);
+                               inDataMap);
         // no error found, continue
         LinkedList<Event> events = new LinkedList<Event>();
-        lookForTradeEvent(inData,
-                events);
-        
+        for (Map.Entry<String, BatchStocks> entry: inDataMap.entrySet()) {
+        	BatchStocks inData = entry.getValue();
+            lookForTradeEvent(inData,
+                    events);
+            lookForAskEvent(inData,
+                    events, inHandle);
+            lookForBidEvent(inData,
+                    events, inHandle);        
+            lookForMarketstateEvent(inData,
+                         events);
+        }
         // iterate over the event candidates in reverse order to accomplish two things:
         //  1) Mark events as part or final (this is the EVENT_BOUNDARY capability contract)
         //  2) compare events to the event cache to make sure we're not sending the same event over and over - this is necessary
@@ -120,6 +132,204 @@ public enum IEXFeedEventTranslator
         }
         return events;
     }
+    /**
+     * Determines if a <code>MarketstateEvent</code> can be found in the given data.
+     *
+     * @param inData a <code>BatchStocks</code> value
+     * @param inEvents a <code>List&lt;Event&gt;</code> value
+     */
+    private void lookForMarketstateEvent(BatchStocks inData,
+                                      List<Event> inEvents)
+    {    	
+        if(inData == null) {
+            throw new NullPointerException();
+        }
+        Quote quote = inData.getQuote();
+        Instrument instrument = getInstrumentFrom(quote.getSymbol());;          
+        MarketstatEventBuilder builder = MarketstatEventBuilder.marketstat(instrument);
+        builder.withTimestamp(new Date(quote.getLastTradeTime()))
+               .withOpenPrice(quote.getIexOpen())
+               .withHighPrice(quote.getHigh())
+               .withLowPrice(quote.getLow())
+               .withClosePrice(quote.getIexClose())
+               .withPreviousClosePrice(quote.getPreviousClose())
+               .withVolume(quote.getVolume())
+               .withCloseDate(quote.getCloseTime() == null? new Date().toString(): new Date(quote.getCloseTime()).toString())                   
+               .withTradeHighTime(quote.getHighTime() == null? new Date().toString(): new Date(quote.getHighTime()).toString())
+               .withTradeLowTime(quote.getLowTime() == null? new Date().toString(): new Date(quote.getLowTime()).toString())      
+               .withOpenExchange(quote.getOpenSource())
+               .withHighExchange(quote.getHighSource())
+               .withLowExchange(quote.getLowSource())
+               .withCloseExchange(quote.getCloseSource());
+        MarketstatEvent quoteEvent = builder.create();
+        inEvents.add(quoteEvent);
+    }
+    /**
+     * Gets the Quote data (price, size). Checks if the quote data is from a new
+     * response / subsequent response by checking the cache for the particular event (bid / ask).
+     * Returns the QuoteDataAction (quote details and the new action to perform for the response).
+     *
+     * @param inSymbol a <code>String</code> value
+     * @param inPrice a <code>String</code> value
+     * @param inSize a <code>String</code> value
+     * @param quoteDataEventMap a <code>Map&lt;String,QuoteData&gt;</code> value
+     * @param handle a <code>String</code> value
+     * @return a <code>QuoteDataAction</code> value
+     */
+    private QuoteDataAction getQuoteDataAction(String inSymbol, BigDecimal inPrice, 
+    		BigDecimal inSize, Map<String, QuoteData> quoteDataEventMap, 
+    								String handle) {
+
+        NumberFormat numberFormat = SHARED_NUMBER_FORMAT.get();
+        boolean parsedState = true;
+		QuoteAction action = null;
+        
+		QuoteData currentQuoteData = new QuoteData(inPrice, inSize, inSymbol);
+		QuoteDataAction quoteDataAction = new QuoteDataAction(currentQuoteData);
+		
+		QuoteData cachedData = quoteDataEventMap.get(handle);
+		
+		if (cachedData == null) {
+			if (parsedState) {			
+				action = QuoteAction.ADD;
+				quoteDataEventMap.put(handle, currentQuoteData);
+			} else {
+				//need to check whether to send delete action for the first request.
+				action = QuoteAction.DELETE;
+				quoteDataEventMap.put(handle, null);
+			}
+		} else if (QUOTE_DATA_COMPARATOR.compare(currentQuoteData, cachedData) != 0) {
+			if(parsedState) {
+				action = QuoteAction.CHANGE;
+				quoteDataEventMap.put(handle, currentQuoteData);				
+			} else {
+				action = QuoteAction.DELETE;
+				quoteDataEventMap.put(handle, null);
+			}
+		}
+		quoteDataAction.setQuoteAction(action);
+		return quoteDataAction;
+    }    
+    /**
+     * Determines if a <code>QuoteEvent</code> can be found in the given data. 
+     *
+     * @param inData a <code>BatchStocks</code> value
+     * @param inEvents a <code>List&lt;Event&gt;</code> value
+     * @param inPrice a <code>String</code> value
+     * @param inSize a <code>String</code> value
+     * @param inSymbol a <code>String</code> value
+     * @param inInstrument an <code>Instrument</code> value
+     * @param inBuilder a <code>QuoteEventBuilder&lt;T&gt;</code> value
+     */
+    private <T extends QuoteEvent> void lookForQuoteEvent(BatchStocks inData,
+                                                          List<Event> inEvents,
+                                                          BigDecimal inPrice,
+                                                          BigDecimal inSize,
+                                                          String inSymbol,
+                                                          Instrument inInstrument,
+                                                          QuoteEventBuilder<T> inBuilder,
+                                                          Map<String, QuoteData> quoteDataEventMap,
+                                                          String handle)
+    {
+    	Quote quote = inData.getQuote();
+        String exchange = quote.getSymbol();
+        // check for a missing field
+        if(exchange == null ||
+           inPrice == null ||
+           inSize == null) {
+            return;
+        }
+        QuoteDataAction quoteDataAction = getQuoteDataAction(inSymbol, inPrice, inSize, quoteDataEventMap, handle);
+        QuoteAction action = quoteDataAction.getQuoteAction();
+        QuoteData quoteData = quoteDataAction.getQuoteData();        
+        if (action == null) {
+        	return;
+        }
+
+        Date date = new Date();
+        
+        inBuilder.withExchange(exchange)
+        		 .withAction(action)
+                 .withProviderSymbol(inSymbol)
+                 .withQuoteDate(date)
+                 .withTimestamp(date)
+                 .withPrice(quoteData.getPrice())
+                 .withSize(quoteData.getSize());
+        addFutureAttributes(inBuilder,
+                            inInstrument,
+                            inData);
+        addOptionAttributes(inBuilder,
+                            inInstrument,
+                            inData);
+        QuoteEvent quoteEvent = inBuilder.create();
+        inEvents.add(quoteEvent);
+    }    
+    /**
+     * Looks for ask events in the given data. 
+     *
+     * @param inData a <code>BatchStocks</code> value
+     * @param inEvents a <code>List&lt;Event&gt;</code> value
+     */
+    private void lookForAskEvent(BatchStocks inData,
+                                 List<Event> inEvents, String inHandle)
+    {
+    	Quote quote = inData.getQuote();
+    	BigDecimal askPrice = quote.getIexAskPrice();
+    	BigDecimal askSize = quote.getIexAskSize();
+        String symbol = quote.getSymbol();
+        // check for a missing field
+        if(symbol == null ||
+           askPrice == null ||
+           askSize == null) {
+            return;
+        }
+        // construct instrument
+        Instrument instrument = getInstrumentFrom(symbol);
+        QuoteEventBuilder<AskEvent> builder = QuoteEventBuilder.askEvent(instrument);
+        String className = AskEvent.class.getName();
+        Map<String, QuoteData> askQuoteDataMap = getEventQuoteDataMap(className);        
+        lookForQuoteEvent(inData,
+                          inEvents,
+                          askPrice,
+                          askSize,
+                          symbol,
+                          instrument,
+                          builder, askQuoteDataMap, inHandle);
+    }
+    /**
+     * Looks for bid events in the given data. 
+     *
+     * @param inData a <code>BatchStocks</code> value
+     * @param inEvents a <code>List&lt;Event&gt;</code> value
+     * @param inHandle 
+     */
+    private void lookForBidEvent(BatchStocks inData,
+                                 List<Event> inEvents, String inHandle)
+    {
+    	Quote quote = inData.getQuote();
+    	BigDecimal bidPrice = quote.getIexBidPrice();
+    	BigDecimal bidSize = quote.getIexBidSize();
+        String symbol = quote.getSymbol();
+        // check for a missing field
+        if(symbol == null ||
+           bidPrice == null ||
+           bidSize == null) {
+            return;
+        }
+        
+        // construct instrument
+        Instrument instrument = getInstrumentFrom(symbol);
+        QuoteEventBuilder<BidEvent> builder = QuoteEventBuilder.bidEvent(instrument);
+        String className = BidEvent.class.getName();
+        Map<String, QuoteData> bidQuoteDataMap = getEventQuoteDataMap(className);        
+        lookForQuoteEvent(inData,
+                          inEvents,
+                          bidPrice,
+                          bidSize,
+                          symbol,
+                          instrument,
+                          builder, bidQuoteDataMap, inHandle);
+    }  
     /**
      * Looks for trade events in the given data. 
      *
@@ -209,6 +419,8 @@ public enum IEXFeedEventTranslator
                             QUOTE_COMPARATOR);
             comparators.put(AskEvent.class,
                             QUOTE_COMPARATOR);
+            comparators.put(MarketstatEvent.class,
+            		EQUITY_COMPARATOR);
         }
         Comparator<Event> comparator = comparators.get(inEvent.getClass());
         if(comparator == null) {
@@ -227,7 +439,6 @@ public enum IEXFeedEventTranslator
         }
         return comparator;
     }
-
 
     private static final ThreadLocal<NumberFormat> SHARED_NUMBER_FORMAT = new ThreadLocal<NumberFormat>() {
         @Override
@@ -332,7 +543,29 @@ public enum IEXFeedEventTranslator
             return trade1.getTradeDate().compareTo(trade2.getTradeDate());
         }
     };
-
+    /**
+     * comparator used to compare subsequent quote events
+     */
+    private static final Comparator<Event> EQUITY_COMPARATOR = new Comparator<Event>() {
+        @Override
+        public int compare(Event inO1,
+                           Event inO2)
+        {
+        	EquityEvent quote1 = (EquityEvent)inO1;
+        	EquityEvent quote2 = (EquityEvent)inO2;
+            int result = quote1.getClass().getName().compareTo(quote2.getClass().getName());
+            if(result != 0) {
+                return result;
+            }
+            result = quote1.getInstrumentAsString().compareTo(quote2.getInstrumentAsString());
+            if(result != 0) {
+                return result;
+            }
+            // same instrument, check quote date
+            return quote1.getTimestamp().compareTo(quote2.getTimestamp());
+        }
+    };
+    
     /**
      * comparator used to compare subsequent quote events
      */
@@ -409,8 +642,7 @@ public enum IEXFeedEventTranslator
     private static final class QuoteData {
     	private BigDecimal price;
     	private BigDecimal size;
-    	private String symbol;
-    	
+    	private String symbol;    	
     	
     	public QuoteData(BigDecimal price, BigDecimal size, String symbol) {
     		this.price = price;

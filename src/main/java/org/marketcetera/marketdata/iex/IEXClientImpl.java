@@ -4,8 +4,10 @@ import java.io.BufferedReader;
 import java.io.IOException;
 import java.io.InputStreamReader;
 import java.net.URL;
+import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.Iterator;
+import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
@@ -16,6 +18,7 @@ import pl.zankowski.iextrading4j.client.IEXCloudClient;
 import pl.zankowski.iextrading4j.client.IEXTradingApiVersion;
 import pl.zankowski.iextrading4j.client.IEXCloudTokenBuilder;
 import pl.zankowski.iextrading4j.client.IEXTradingClient;
+import pl.zankowski.iextrading4j.client.rest.request.stocks.v1.BatchMarketStocksRequestBuilder;
 import pl.zankowski.iextrading4j.client.rest.request.stocks.v1.BatchStocksRequestBuilder;
 import pl.zankowski.iextrading4j.client.rest.request.stocks.v1.BatchStocksType;
 import pl.zankowski.iextrading4j.api.stocks.v1.BatchStocks;
@@ -92,11 +95,11 @@ class IEXClientImpl
                         try {
                             feedServices.doDataReceived(request.getHandle(),
                                                         submit(request));
-                        } catch (IOException e) {
+                        } catch (Exception e) {
                             SLF4JLoggerProxy.debug(IEXClientImpl.class,
                                                    e,
                                                    "Retrying...");
-                        }
+                        } 
                     }
                 }
                 Thread.sleep(feedServices.getRefreshInterval());
@@ -182,18 +185,11 @@ class IEXClientImpl
      * @return a <code>BatchStocks</code> value
      * @throws IOException if an error occurs submitting the request
      */
-    private BatchStocks submit(IEXRequest inRequest)
+    private Map<String, BatchStocks> submit(IEXRequest inRequest)
             throws IOException
     {
-    	StringBuilder symbolBuilder = new StringBuilder();
-        Iterator<String> it = inRequest.getRequest().getSymbols().iterator();
-        while(it.hasNext()){
-        	symbolBuilder.append(it.next());
-        }
-    	BatchStocks result = cloudClient.executeRequest(new BatchStocksRequestBuilder()
-    	        .withSymbol(symbolBuilder.toString())
-    	        .addType(BatchStocksType.LARGEST_TRADES)
-    	        .addType(BatchStocksType.PRICE_TARGET)
+    	Map<String, BatchStocks> result = cloudClient.executeRequest(new BatchMarketStocksRequestBuilder()
+    	        .withSymbols(new ArrayList<String>(inRequest.getRequest().getSymbols()))
     	        .addType(BatchStocksType.QUOTE)
     	        .build());
     	return result;
@@ -201,7 +197,7 @@ class IEXClientImpl
     /**
      * iextrading4j client
      */
-    static final IEXCloudClient cloudClient = IEXTradingClient.create(IEXTradingApiVersion.IEX_CLOUD_V1_SANDBOX,
+    static final IEXCloudClient cloudClient = IEXTradingClient.create(IEXTradingApiVersion.IEX_CLOUD_V1,
             new IEXCloudTokenBuilder()
             .withPublishableToken(System.getenv("IEX_TOKEN"))
             .withSecretToken(System.getenv("IEX_SECRET"))
