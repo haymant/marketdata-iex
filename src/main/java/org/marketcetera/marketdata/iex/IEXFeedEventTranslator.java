@@ -148,12 +148,12 @@ public enum IEXFeedEventTranslator
         Instrument instrument = getInstrumentFrom(quote.getSymbol());;          
         MarketstatEventBuilder builder = MarketstatEventBuilder.marketstat(instrument);
         builder.withTimestamp(new Date(quote.getLastTradeTime()))
-               .withOpenPrice(quote.getIexOpen())
+               .withOpenPrice(quote.getOpen())
                .withHighPrice(quote.getHigh())
                .withLowPrice(quote.getLow())
-               .withClosePrice(quote.getIexClose())
+               .withClosePrice(quote.getClose())
                .withPreviousClosePrice(quote.getPreviousClose())
-               .withVolume(quote.getVolume())
+               .withVolume(quote.getLatestVolume())
                .withCloseDate(quote.getCloseTime() == null? new Date().toString(): new Date(quote.getCloseTime()).toString())                   
                .withTradeHighTime(quote.getHighTime() == null? new Date().toString(): new Date(quote.getHighTime()).toString())
                .withTradeLowTime(quote.getLowTime() == null? new Date().toString(): new Date(quote.getLowTime()).toString())      
