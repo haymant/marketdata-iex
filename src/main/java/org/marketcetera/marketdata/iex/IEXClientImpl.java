@@ -114,6 +114,11 @@ class IEXClientImpl
     public boolean login(IEXFeedCredentials inCredentials)
     {
         credentials = inCredentials;
+        cloudClient = IEXTradingClient.create(IEXTradingApiVersion.IEX_CLOUD_V1,
+                new IEXCloudTokenBuilder()
+                .withPublishableToken(inCredentials.getToken())
+                .withSecretToken(inCredentials.getSecret())
+                .build());
         start();
         return isRunning();
     }
@@ -197,11 +202,7 @@ class IEXClientImpl
     /**
      * iextrading4j client
      */
-    static final IEXCloudClient cloudClient = IEXTradingClient.create(IEXTradingApiVersion.IEX_CLOUD_V1,
-            new IEXCloudTokenBuilder()
-            .withPublishableToken(System.getenv("IEX_TOKEN"))
-            .withSecretToken(System.getenv("IEX_SECRET"))
-            .build());
+    private volatile IEXCloudClient cloudClient;
 
     /**
      * IEX feed services value
