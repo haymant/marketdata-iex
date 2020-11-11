@@ -21,6 +21,7 @@ import pl.zankowski.iextrading4j.client.IEXTradingClient;
 import pl.zankowski.iextrading4j.client.rest.request.stocks.v1.BatchMarketStocksRequestBuilder;
 import pl.zankowski.iextrading4j.client.rest.request.stocks.v1.BatchStocksRequestBuilder;
 import pl.zankowski.iextrading4j.client.rest.request.stocks.v1.BatchStocksType;
+import pl.zankowski.iextrading4j.api.stocks.ChartRange;
 import pl.zankowski.iextrading4j.api.stocks.v1.BatchStocks;
 
 import org.marketcetera.util.log.SLF4JLoggerProxy;
@@ -114,7 +115,7 @@ class IEXClientImpl
     public boolean login(IEXFeedCredentials inCredentials)
     {
         credentials = inCredentials;
-        cloudClient = IEXTradingClient.create(IEXTradingApiVersion.IEX_CLOUD_V1,
+        cloudClient = IEXTradingClient.create(IEXTradingApiVersion.IEX_CLOUD_V1_SANDBOX, //.IEX_CLOUD_V1,
                 new IEXCloudTokenBuilder()
                 .withPublishableToken(inCredentials.getToken())
                 .withSecretToken(inCredentials.getSecret())
@@ -191,12 +192,24 @@ class IEXClientImpl
      * @throws IOException if an error occurs submitting the request
      */
     private Map<String, BatchStocks> submit(IEXRequest inRequest)
-            throws IOException
+            throws IOException, IllegalArgumentException
     {
-    	Map<String, BatchStocks> result = cloudClient.executeRequest(new BatchMarketStocksRequestBuilder()
-    	        .withSymbols(new ArrayList<String>(inRequest.getRequest().getSymbols()))
-    	        .addType(BatchStocksType.QUOTE)
-    	        .build());
+    	BatchMarketStocksRequestBuilder builder = new BatchMarketStocksRequestBuilder()
+    			.withSymbols(new ArrayList<String>(inRequest.getRequest().getSymbols()))
+    	        .addType(BatchStocksType.QUOTE);
+    	if (inRequest.getRequest().getParameters() != null) {
+    		for (Map.Entry<String, String> param: inRequest.getRequest().getParameters().entrySet()) {
+    			if (param.getKey().equals("range")) {
+    				ChartRange range = ChartRange.getValueFromCode(param.getValue());
+    				builder.withChartRange(range);
+    			} else if (param.getKey().equals("types")) {
+    				for (String type : param.getValue().split(",")) {
+    					builder.addType(BatchStocksType.valueOf(type));
+    				}
+    			}
+    		}
+    	}
+    	Map<String, BatchStocks> result = cloudClient.executeRequest(builder.build());
     	return result;
     }
     /**

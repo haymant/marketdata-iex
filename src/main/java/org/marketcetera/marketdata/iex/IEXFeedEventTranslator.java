@@ -2,6 +2,7 @@ package org.marketcetera.marketdata.iex;
 
 import java.math.BigDecimal;
 import java.text.NumberFormat;
+import java.text.SimpleDateFormat;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.Date;
@@ -14,6 +15,7 @@ import java.util.Map;
 
 import javax.annotation.concurrent.ThreadSafe;
 
+import pl.zankowski.iextrading4j.api.stocks.Chart;
 import pl.zankowski.iextrading4j.api.stocks.Quote;
 import pl.zankowski.iextrading4j.api.stocks.v1.BatchStocks;
 
@@ -98,14 +100,11 @@ public enum IEXFeedEventTranslator
         LinkedList<Event> events = new LinkedList<Event>();
         for (Map.Entry<String, BatchStocks> entry: inDataMap.entrySet()) {
         	BatchStocks inData = entry.getValue();
-            lookForTradeEvent(inData,
-                    events);
-            lookForAskEvent(inData,
-                    events, inHandle);
-            lookForBidEvent(inData,
-                    events, inHandle);        
-            lookForMarketstateEvent(inData,
-                         events);
+        	processChart(entry.getKey(), inData.getChart(), events);
+            lookForTradeEvent(inData, events);
+            lookForAskEvent(inData, events, inHandle);
+            lookForBidEvent(inData, events, inHandle);        
+            lookForMarketstateEvent(inData, events);
         }
         // iterate over the event candidates in reverse order to accomplish two things:
         //  1) Mark events as part or final (this is the EVENT_BOUNDARY capability contract)
@@ -132,6 +131,61 @@ public enum IEXFeedEventTranslator
         }
         return events;
     }
+    /**
+     * Convert individual item to event from IEX chart 
+     *
+     * @param inSymbol a <code>String</code> value
+     * @param inChart a <code>List&lt;Chart&gt;</code> value
+     * @param inEvents a <code>List&lt;Event&gt;</code> value
+     */
+    private void processChart(String inSymbol, List<Chart> inChart,
+                                      List<Event> inEvents)
+    {
+    	if (inChart == null || inChart.size() == 0) {
+    		return;
+    	}
+    	for (Chart chart: inChart) {
+    		lookForMarketstateEvent(inSymbol, chart, inEvents);
+    	}
+    }
+    /**
+     * Determines if a <code>MarketstateEvent</code> can be found in the given data.
+     *
+     * @param inSymbol a <code>String</code> value
+     * @param inData a <code>Chart</code> value
+     * @param inEvents a <code>List&lt;Event&gt;</code> value
+     */
+    private void lookForMarketstateEvent(String inSymbol, Chart inData,
+                                      List<Event> inEvents)
+    {    	
+        if(inData == null) {
+            throw new NullPointerException();
+        }
+		Date date = null;
+		try {
+			String minute = inData.getMinute();
+			if (minute == null) {
+				minute = "00:00:00";
+			}
+			date = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss")
+					.parse(inData.getDate() + " " + minute);
+		} catch (Exception e) {
+			return;
+		}
+		if (inSymbol == null || date == null) {
+			return;
+		}       
+        Instrument instrument = getInstrumentFrom(inSymbol);;          
+        MarketstatEventBuilder builder = MarketstatEventBuilder.marketstat(instrument);
+        builder.withTimestamp(date)
+               .withOpenPrice(inData.getOpen())
+               .withHighPrice(inData.getHigh())
+               .withLowPrice(inData.getLow())
+               .withClosePrice(inData.getClose())
+               .withVolume(inData.getVolume());
+        MarketstatEvent event = builder.create();
+        inEvents.add(event);
+    }    
     /**
      * Determines if a <code>MarketstateEvent</code> can be found in the given data.
      *
